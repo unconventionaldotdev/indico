@@ -17,15 +17,16 @@ from sqlalchemy.dialects.postgresql import ARRAY
 
 from indico.core.db import db
 from indico.core.marshmallow import mm
+from indico.modules.events.registration.custom import RegistrationListColumn
 from indico.modules.events.registration.fields.base import (FieldSetupSchemaBase, LimitedPlacesBillableItemSchema,
                                                             RegistrationFormBillableField,
                                                             RegistrationFormBillableItemsField)
 from indico.modules.events.registration.models.form_fields import RegistrationFormFieldData
-from indico.modules.events.registration.models.registrations import RegistrationData
+from indico.modules.events.registration.models.registrations import Registration, RegistrationData
 from indico.util.date_time import format_date
 from indico.util.i18n import _, ngettext
 from indico.util.marshmallow import UUIDString, not_empty
-from indico.util.string import camelize_keys, snakify_keys
+from indico.util.string import camelize_keys, natural_sort_key, snakify_keys
 
 
 def get_field_merged_options(field, registration_data):
@@ -132,7 +133,26 @@ class ChoiceBaseField(RegistrationFormBillableItemsField):
 
     @property
     def filter_choices(self):
-        return self.form_item.data['captions']
+        captions = self.form_item.data['captions']
+        current_choice_ids = {c['id'] for c in self.form_item.versioned_data['choices']}
+        deleted_ids = set(captions) - current_choice_ids
+        hidden_ids = deleted_ids - self._get_used_choice_ids() if deleted_ids else set()
+        visible_choices = [(k, v) for k, v in captions.items() if k not in hidden_ids]
+        return dict(sorted(visible_choices, key=lambda item: natural_sort_key(item[1])))
+
+    def _get_used_choice_ids(self):
+        query = (RegistrationData.query
+                 .join(RegistrationData.registration)
+                 .filter(Registration.registration_form == self.form_item.registration_form,
+                         ~Registration.is_deleted,
+                         RegistrationData.field_data.has(field_id=self.form_item.id)))
+        choice_key = RegistrationData.data.op('?')('choice')
+        non_legacy_ids = (query.filter(~choice_key)
+                          .with_entities(db.func.jsonb_object_keys(RegistrationData.data).label('choice_id')))
+        legacy_ids = (query.filter(choice_key)
+                      .with_entities(RegistrationData.data['choice'].astext.label('choice_id')))
+        used_ids = non_legacy_ids.union_all(legacy_ids).distinct()
+        return {row.choice_id for row in used_ids}
 
     @property
     def view_data(self):
@@ -290,6 +310,10 @@ class MultiChoiceField(ChoiceBaseField):
         choices = [_format_item(uuid, number_of_slots) for uuid, number_of_slots in reg_data.items()]
 
         return ', '.join(choices) if for_humans or for_search else choices
+
+    def render_reglist_column(self, data):
+        display_text = self.get_friendly_data(data, for_humans=True)
+        return RegistrationListColumn(display_text, display_text)
 
     def get_validators(self, existing_registration):
         def _check_max_choices(new_data):
@@ -477,6 +501,7 @@ class AccommodationField(RegistrationFormBillableItemsField):
     mm_field_class = fields.Nested
     mm_field_args = (AccommodationSchema,)
     allow_condition = True
+    management = False
 
     def _get_default_value(self, *, ui):
         versioned_data = self.form_item.versioned_data
@@ -573,14 +598,16 @@ class AccommodationField(RegistrationFormBillableItemsField):
                     raise ValidationError(_('Arrival/departure date is missing'))
                 if arrival_date > departure_date:
                     raise ValidationError(_("Arrival date can't be set after the departure date."))
-                arrival_date_from = date.fromisoformat(self.form_item.data['arrival_date_from'])
-                arrival_date_to = date.fromisoformat(self.form_item.data['arrival_date_to'])
-                departure_date_from = date.fromisoformat(self.form_item.data['departure_date_from'])
-                departure_date_to = date.fromisoformat(self.form_item.data['departure_date_to'])
-                if not (arrival_date_from <= arrival_date <= arrival_date_to):
-                    raise ValidationError(_('Arrival date is not within the required range.'))
-                if not (departure_date_from <= departure_date <= departure_date_to):
-                    raise ValidationError(_('Departure date is not within the required range.'))
+                # Managers can set dates outside the allowed range (e.g. for late arrivals or exceptions)
+                if not self.management:
+                    arrival_date_from = date.fromisoformat(self.form_item.data['arrival_date_from'])
+                    arrival_date_to = date.fromisoformat(self.form_item.data['arrival_date_to'])
+                    departure_date_from = date.fromisoformat(self.form_item.data['departure_date_from'])
+                    departure_date_to = date.fromisoformat(self.form_item.data['departure_date_to'])
+                    if not (arrival_date_from <= arrival_date <= arrival_date_to):
+                        raise ValidationError(_('Arrival date is not within the required range.'))
+                    if not (departure_date_from <= departure_date <= departure_date_to):
+                        raise ValidationError(_('Departure date is not within the required range.'))
 
         def _check_number_of_places(new_data):
             if not new_data:
@@ -668,3 +695,9 @@ class AccommodationField(RegistrationFormBillableItemsField):
                    'departure': 'departure_date'}
         rv = self.get_friendly_data(data).get(mapping[key], '')
         return format_date(rv) if isinstance(rv, date) else rv
+
+    def render_reglist_column(self, data):
+        content_dict = self.get_friendly_data(data)
+        nights = ngettext('{n} night', '{n} nights', content_dict['nights']).format(n=content_dict['nights'])
+        text_val = f"{content_dict['choice']} ({nights})"
+        return RegistrationListColumn(content_dict, text_val)

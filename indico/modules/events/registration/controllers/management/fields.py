@@ -8,7 +8,7 @@
 from datetime import timedelta
 
 from flask import jsonify, request, session
-from marshmallow import EXCLUDE, ValidationError, fields, post_load, validates, validates_schema
+from marshmallow import EXCLUDE, ValidationError, fields, post_load, validate, validates, validates_schema
 from werkzeug.exceptions import BadRequest
 
 from indico.core import signals
@@ -16,10 +16,12 @@ from indico.core.db import db
 from indico.core.db.sqlalchemy.util.session import no_autoflush
 from indico.core.errors import NoReportError
 from indico.core.marshmallow import mm
+from indico.modules.events.models.events import Event
 from indico.modules.events.registration import logger
 from indico.modules.events.registration.controllers.management.sections import RHManageRegFormSectionBase
 from indico.modules.events.registration.fields import get_field_types
 from indico.modules.events.registration.models.form_fields import RegistrationFormField
+from indico.modules.events.registration.models.forms import RegistrationForm
 from indico.modules.events.registration.models.items import (RegistrationFormItem, RegistrationFormItemType,
                                                              RegistrationFormText)
 from indico.modules.events.registration.util import get_flat_section_positions_setup_data, update_regform_item_positions
@@ -30,6 +32,13 @@ from indico.util.date_time import format_human_timedelta
 from indico.util.i18n import _, ngettext
 from indico.util.marshmallow import not_empty
 from indico.util.string import snakify_keys
+
+
+def _is_compatible_internal_name_type(internal_name, input_type, other_input_type):
+    return (
+        input_type == other_input_type or
+        (internal_name == 'affiliation' and {input_type, other_input_type} <= {'text', 'affiliation'})
+    )
 
 
 class GeneralFieldDataSchema(mm.Schema):
@@ -43,6 +52,7 @@ class GeneralFieldDataSchema(mm.Schema):
     input_type = fields.String(required=True, validate=not_empty)
     show_if_id = fields.Integer(required=False, load_default=None, data_key='show_if_field_id')
     show_if_values = fields.List(fields.Raw(), required=False, data_key='show_if_field_values')
+    internal_name = fields.String(allow_none=True, validate=validate.Regexp(r'[a-z0-9-]+$'))
 
     @validates('title')
     @no_autoflush
@@ -101,6 +111,59 @@ class GeneralFieldDataSchema(mm.Schema):
                 raise ValidationError(_('The retention period cannot be longer than 10 years. Leave the field empty '
                                         'for indefinite.'))
 
+    @validates_schema(skip_on_field_errors=True)
+    @no_autoflush
+    def _check_internal_name(self, data, **kwargs):
+        input_type = data['input_type']
+        internal_name = data.get('internal_name')
+        field = self.context['field']
+        if field.type == RegistrationFormItemType.field_pd and internal_name != field.personal_data_type.internal_name:
+            raise ValidationError(_('Changing internal name for personal data field is not allowed.'), 'internal_name')
+        if internal_name is None:
+            return
+        if field.is_enabled is not False:  # None for new field
+            # check unique internal name on form
+            query = (RegistrationFormItem.query
+                     .with_parent(field.registration_form)
+                     .filter(RegistrationFormItem.internal_name == internal_name,
+                             RegistrationFormItem.is_enabled,
+                             ~RegistrationFormItem.is_deleted))
+            if field.id:
+                query = query.filter(RegistrationFormItem.id != field.id)
+            if same_field := query.first():
+                raise ValidationError(
+                    _('The field "{}" on this form has the same internal name.').format(same_field.title),
+                    'internal_name',
+                )
+            # consistent type on forms of the same event
+            query = (RegistrationFormItem.query
+                     .join(RegistrationFormItem.registration_form)
+                     .join(RegistrationForm.event)
+                     .filter(RegistrationFormItem.internal_name == internal_name,
+                             RegistrationFormItem.registration_form_id != field.registration_form.id,
+                             RegistrationFormItem.input_type != input_type,
+                             RegistrationFormItem.is_enabled,
+                             ~RegistrationFormItem.is_deleted,
+                             ~RegistrationForm.is_deleted,
+                             Event.id == field.registration_form.event_id))
+            if field.id:
+                query = query.filter(RegistrationFormItem.id != field.id)
+            inconsistent_field = next(
+                (item for item in query
+                 if not _is_compatible_internal_name_type(internal_name, field.input_type, item.input_type)),
+                None
+            )
+            if inconsistent_field:
+                raise ValidationError(
+                    _('The field "{field}" with the same internal name on form "{form}" uses a different input type '
+                      'which is not allowed.'
+                    ).format(field=inconsistent_field.title, form=inconsistent_field.registration_form.title),
+                    'internal_name',
+                )
+
+    def _check_manager_only(self, field):
+        return field.parent.is_manager_only
+
     @validates('show_if_id')
     @no_autoflush
     def _check_show_if_id(self, field_id, **kwargs):
@@ -108,7 +171,7 @@ class GeneralFieldDataSchema(mm.Schema):
         if field_id is None:
             return
         field = self.context['field']
-        if field.parent.is_manager_only:
+        if self._check_manager_only(field):
             raise ValidationError('Manager-only fields cannot be conditionally shown')
         used_field_ids = set()
         if field.id is not None:
@@ -132,7 +195,7 @@ class GeneralFieldDataSchema(mm.Schema):
             else:
                 used_field_ids.add(next_field_id)
             next_field = RegistrationFormItem.query.filter_by(id=next_field_id).one()
-            if next_field.parent.is_manager_only:
+            if self._check_manager_only(next_field):
                 raise ValidationError('Field conditions may not depend on fields in manager-only sections')
             if not next_field.is_enabled:
                 raise ValidationError('Field conditions may not depend on disabled fields')
@@ -236,6 +299,56 @@ class RHManageRegFormFieldBase(RHManageRegFormSectionBase):
 class RHRegistrationFormToggleFieldState(RHManageRegFormFieldBase):
     """Enable/Disable a field."""
 
+    def _check_unique_title_in_section(self):
+        query = (RegistrationFormItem.query
+                 .filter(RegistrationFormItem.parent_id == self.field.parent.id,
+                         db.func.lower(RegistrationFormItem.title) == self.field.title.lower(),
+                         RegistrationFormItem.is_enabled,
+                         ~RegistrationFormItem.is_deleted))
+        if query.has_rows():
+            raise NoReportError.wrap_exc(
+                BadRequest(_('There is already a field in this section with the same title.'))
+            )
+
+    def _check_unique_internal_name_in_form(self):
+        if not self.field.internal_name:
+            return
+        query = (RegistrationFormItem.query
+                 .with_parent(self.field.registration_form)
+                 .filter(RegistrationFormItem.internal_name == self.field.internal_name,
+                         RegistrationFormItem.is_enabled,
+                         ~RegistrationFormItem.is_deleted))
+        if same_field := query.first():
+            raise NoReportError.wrap_exc(
+                BadRequest(_('The field "{}" on this form has the same internal name.')
+                           .format(same_field.title))
+            )
+
+    def _check_internal_name_type_consistency_in_event(self):
+        if not self.field.internal_name:
+            return
+        query = (RegistrationFormItem.query
+                 .join(RegistrationFormItem.registration_form)
+                 .join(RegistrationForm.event)
+                 .filter(RegistrationFormItem.internal_name == self.field.internal_name,
+                         RegistrationFormItem.registration_form_id != self.field.registration_form.id,
+                         RegistrationFormItem.input_type != self.field.input_type,
+                         RegistrationFormItem.is_enabled,
+                         ~RegistrationFormItem.is_deleted,
+                         Event.id == self.field.registration_form.event_id))
+        inconsistent_field = next(
+            (item for item in query
+             if not _is_compatible_internal_name_type(self.field.internal_name, self.field.input_type,
+                                                      item.input_type)),
+            None
+        )
+        if inconsistent_field:
+            raise NoReportError.wrap_exc(
+                BadRequest(_('The field "{}" with the same internal name on form "{}" '
+                             'uses a different input type which is not allowed.')
+                           .format(inconsistent_field.title, inconsistent_field.registration_form.title))
+            )
+
     def _process(self):
         enabled = request.args.get('enable') == 'true'
         if (not enabled and self.field.type == RegistrationFormItemType.field_pd and
@@ -244,15 +357,9 @@ class RHRegistrationFormToggleFieldState(RHManageRegFormFieldBase):
         if not enabled and self.field.condition_for:
             raise NoReportError.wrap_exc(BadRequest(_('Fields used as conditional cannot be disabled')))
         if enabled:
-            query = (RegistrationFormItem.query
-                     .filter(RegistrationFormItem.parent_id == self.field.parent.id,
-                             db.func.lower(RegistrationFormItem.title) == self.field.title.lower(),
-                             RegistrationFormItem.is_enabled,
-                             ~RegistrationFormItem.is_deleted))
-            if query.has_rows():
-                raise NoReportError.wrap_exc(
-                    BadRequest(_('There is already a field in this section with the same title.'))
-                )
+            self._check_unique_title_in_section()
+            self._check_unique_internal_name_in_form()
+            self._check_internal_name_type_consistency_in_event()
 
         self.field.is_enabled = enabled
         update_regform_item_positions(self.regform)
@@ -307,6 +414,7 @@ class RHRegistrationFormModifyField(RHManageRegFormFieldBase):
             'description': {'title': 'Description'},
             'is_required': {'title': 'Required'},
             'retention_period': {'title': 'Retention period'},
+            'internal_name': {'title': 'Internal name', 'type': 'string'},
         })
         self.field.log(
             EventLogRealm.management, LogKind.change, 'Registration',

@@ -68,6 +68,7 @@ class PersonalDataType(IndicoIntEnum):
     @strict_classproperty
     @classmethod
     def FIELD_DATA(cls):  # noqa: N802
+        from indico.modules.events.registration.fields.affiliation import AffiliationMode
         title_item = {'price': 0,
                       'places_limit': 0,
                       'is_enabled': True}
@@ -89,8 +90,11 @@ class PersonalDataType(IndicoIntEnum):
             }),
             (cls.affiliation, {
                 'title': cls.affiliation.get_title(),
-                'input_type': 'text',
-                'position': 4
+                'input_type': 'affiliation',
+                'position': 4,
+                'data': {
+                    'affiliation_mode': AffiliationMode.both,
+                },
             }),
             # Fields disabled by default start in position 1000 to avoid problems reordering
             (cls.address, {
@@ -140,6 +144,10 @@ class PersonalDataType(IndicoIntEnum):
     @property
     def is_required(self):
         return self in {PersonalDataType.email, PersonalDataType.first_name, PersonalDataType.last_name}
+
+    @property
+    def internal_name(self):
+        return self.name.replace('_', '-')
 
     @property
     def column(self):
@@ -192,6 +200,9 @@ class RegistrationFormItem(db.Model):
                            .format(t=RegistrationFormItemType,
                                    required_fields=','.join([str(f.value) for f in PersonalDataType if f.is_required])),
                            name='retention_period_allowed_fields'),
+        db.CheckConstraint("internal_name != ''", name='internal_name_not_empty'),
+        db.CheckConstraint('(internal_name IS NOT NULL) OR (personal_data_type IS NULL)',
+                           name='pd_internal_name_required'),
         db.Index('ix_uq_form_items_pd_section', 'registration_form_id', unique=True,
                  postgresql_where=db.text(f'type = {RegistrationFormItemType.section_pd}')),
         db.Index('ix_uq_form_items_pd_field', 'registration_form_id', 'personal_data_type', unique=True,
@@ -247,6 +258,12 @@ class RegistrationFormItem(db.Model):
     #: The values of the referenced form field for which to show this one
     show_if_values = db.Column(
         JSONB(none_as_null=True),
+        nullable=True,
+    )
+    #: The internal name of this field
+    internal_name = db.Column(
+        db.String,
+        index=True,
         nullable=True,
     )
     #: The title of this field

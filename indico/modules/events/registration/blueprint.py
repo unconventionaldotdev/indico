@@ -119,10 +119,10 @@ _bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/email-pre
                  reglists.RHRegistrationEmailRegistrantsPreview, methods=('GET', 'POST'))
 _bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/import', 'registrations_import',
                  reglists.RHRegistrationsImport, methods=('GET', 'POST'))
-_bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/table.pdf', 'registrations_pdf_export_table',
-                 reglists.RHRegistrationsExportPDFTable, methods=('POST',))
-_bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/book.pdf', 'registrations_pdf_export_book',
-                 reglists.RHRegistrationsExportPDFBook, methods=('POST',))
+_bp.add_url_rule(
+    '/manage/registration/<int:reg_form_id>/registrations/<any(table, book):export_type>.pdf',
+    'registrations_pdf_export', reglists.RHRegistrationsExportPDF, methods=('POST',),
+)
 _bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/registrations.csv', 'registrations_csv_export',
                  reglists.RHRegistrationsExportCSV, methods=('POST',))
 _bp.add_url_rule('/manage/registration/<int:reg_form_id>/registrations/registrations.xlsx',
@@ -236,6 +236,8 @@ _bp.add_url_rule('/registrations/<int:reg_form_id>/upload/<int:field_id>',
                  'upload_registration_file', display.RHUploadRegistrationFile, methods=('POST',))
 _bp.add_url_rule('/registrations/<int:reg_form_id>/upload-picture/<int:field_id>',
                  'upload_registration_picture', display.RHUploadRegistrationPicture, methods=('POST',))
+_bp.add_url_rule('/registration/<int:reg_form_id>/affiliations/<int:field_id>', 'search_registration_affiliation',
+                 display.RHSearchRegistrationAffiliation)
 _bp.add_url_rule('/registrations/<int:reg_form_id>/edit', 'edit_registration_display',
                  display.RHRegistrationDisplayEdit, methods=('GET', 'POST'))
 _bp.add_url_rule('/registrations/<int:reg_form_id>/withdraw', 'withdraw_registration',
