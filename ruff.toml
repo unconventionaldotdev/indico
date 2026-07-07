@@ -49,6 +49,7 @@ ignore = [
     'RUF027',  # also triggers on i18n functions -> too noisy for now
     'RUF052',  # we often use underscore-prefixed variables in tests and to cache regexps in function definitions
     'RUF067',  # we often have code in __init__.py
+    'RUF076',  # autouse=True fixtures are perfectly valid
     'D205',    # too many docstrings which have no summary line
     'D301',    # https://github.com/astral-sh/ruff/issues/8696
     'D1',      # we have way too many missing docstrings :(
@@ -85,6 +86,7 @@ ignore = [
     'PLR6201', # sets are faster (by a factor of 10!) but it's noisy and we're in nanoseconds territory
     'PLR6301', # extremely noisy and generally annoying
     'PLW0108', # a lambda often makes it more clear what you actually want
+    'PLW0717', # noisy and currently also triggering on try..finally
     'PLW1510', # we often do not care about the status code of commands
     'PLW1514', # we expect UTF8 environments everywhere
     'PLW1641', # false positives with SA comparator classes
@@ -115,6 +117,7 @@ extend-safe-fixes = [
 
 [format]
 quote-style = 'single'
+preview = true
 
 [lint.flake8-builtins]
 builtins-ignorelist = ['id', 'format', 'input', 'type', 'credits']

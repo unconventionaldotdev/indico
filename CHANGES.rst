@@ -7,6 +7,19 @@ Version 3.3.13
 
 *Unreleased*
 
+Security fixes
+^^^^^^^^^^^^^^
+
+- Fix an XSS vulnerability when resolving conflicts between concurrent edits to minutes
+- Fix an XSS vulnerability in various places that allow entering custom links
+
+.. note::
+
+    The risk of these vulnerabilities is relatively low, because for the minute editor both the
+    attacker and the victim would need to collaborate on the same minutes (ie have privileges
+    to edit them), and the others require at least submitter or management access in an event
+    and additionally an interaction (clicking the link) by the victim.
+
 Improvements
 ^^^^^^^^^^^^
 
@@ -30,6 +43,12 @@ Improvements
   registrations (:issue:`7415`, :pr:`7433`, thanks :user:`moliholy, unconventionaldotdev`)
 - Automatically paste obvious email addresses into the email field when pasting in
   the user search dialog (:pr:`7538`)
+- Allow changing/removing the registration fee of pending registrations (:pr:`7572`)
+- Add QR code generator to event share widget (:issue:`6796`, :pr:`7504`)
+- Add contribution link placeholder for emailing abstract roles (:issue:`3602`, :pr:`7569`)
+- Allow cloning survey sections (:issue:`7395`, :pr:`7536`)
+- Add "Affiliation" field type to regforms (:pr:`7352`, thanks
+  :user:`duartegalvao, unconventionaldotdev`)
 
 Bugfixes
 ^^^^^^^^
@@ -49,6 +68,11 @@ Bugfixes
   mobile when the page is pinch-zoomed, when the input is near a viewport
   edge, or when the virtual keyboard is open (:pr:`7529`, thanks
   :user:`foxbunny`)
+- Fix database error when importing protection settings in an unlisted event
+  (:issue:`7550`, :pr:`7551`)
+- Use consistent sorting and hide deleted+unused single-choice options in
+  registration list filters (:pr:`7439`, thanks :user:`duartegalvao`)
+- Honor room booking details restrictions in spreadsheet export (:pr:`7612`)
 
 Accessibility
 ^^^^^^^^^^^^^
@@ -58,12 +82,25 @@ Accessibility
 - Icon-only buttons on the abstract detail page now have proper accessible names
   and tooltips instead of relying on the ``title`` attribute (:pr:`7474`, thanks
   :user:`foxbunny`)
+- Screen reader users can now navigate to the footer link list as a named
+  navigation landmark (:pr:`7559`, thanks :user:`foxbunny`)
+- Screen reader users can now navigate the dashboard sections as second-level
+  headings instead of a flat run of same-level headings (:pr:`7581`, thanks
+  :user:`foxbunny`)
+- Screen readers now correctly recognise modal dialogs as modal, keeping
+  navigation within the open dialog (:pr:`7570`, thanks :user:`foxbunny`)
+- Screen reader users can now access the full date range and timezone for events
+  in the dashboard lists, which was previously shown only as a mouse-hover
+  tooltip (:pr:`7608`, thanks :user:`foxbunny`)
 
 Internal Changes
 ^^^^^^^^^^^^^^^^
 
 - Modernize the PDF registrant list generation using weasyprint (:pr:`7077`, thanks
   :user:`abhinavohri`)
+- Relax the videoconference name length limit to 255 characters, delegating
+  service-specific limits to each plugin (:pr:`7560`, thanks
+  :user:`moliholy, unconventionaldotdev`)
 
 
 Version 3.3.12
